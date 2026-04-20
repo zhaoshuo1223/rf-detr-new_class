@@ -16,11 +16,11 @@
 
 """Greedy matching and accumulation functions for evaluation metrics."""
 
-from typing import Any, List
+from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 from torchvision.ops import box_iou
 
 from rfdetr.utilities import all_gather
@@ -300,7 +300,7 @@ def distributed_merge_matching_data(
     Returns:
         Merged accumulator containing contributions from all ranks.
     """
-    gathered: List[dict[int, dict[str, Any]]] = all_gather(local_data)
+    gathered: list[dict[int, dict[str, Any]]] = all_gather(local_data)
     merged: dict[int, dict[str, Any]] = {}
     for rank_data in gathered:
         merge_matching_data(merged, rank_data)
