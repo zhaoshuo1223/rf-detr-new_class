@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------
 # RF-DETR ONNX Inference (Simple)
 # - Based on rfdetr/infer-onnx_area.py
-# - Keeps only: inference + visualization output
+# - Image I/O, resize, draw, save: Pillow (no OpenCV)
 # - Removes: mask area calculation / txt / excel aggregation
 # ------------------------------------------------------------------------
 
@@ -10,28 +10,28 @@ import os
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 import onnxruntime
+from PIL import Image, ImageDraw, ImageFont
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with a RF-DETR ONNX model (simple).")
     parser.add_argument(
         "--model",
-        default=r"D:\aotto\budingban\model\hebing\03-04\576m\export\liao_576.onnx",
+        default=r"D:\aotto\budingban\model\yuqi_04-20-576m\export\yunqi-04_21-576m.onnx",
         type=str,
         help="Path to the ONNX model file",
     )
     parser.add_argument(
         "--image_dir",
-        default=r"D:\aotto\budingban\model\test\0323-2\0323-2",
+        default=r"D:\aotto\budingban\data_set\aaa_hebing",
         type=str,
         help="Input image directory (or a single image path)",
     )
     parser.add_argument(
         "--output",
-        default=r"D:\aotto\budingban\model\test\simple_out",
+        default=r"D:\aotto\budingban\data_set\emp—out",
         type=str,
         help="Output directory to save visualized images",
     )
@@ -40,6 +40,12 @@ def parse_args():
         default=0.65,
         type=float,
         help="Confidence threshold",
+    )
+    parser.add_argument(
+        "--low_conf_threshold",
+        default=0.9,
+        type=float,
+        help="If any detection score is below this value, save the visualization into output/low_conf as well.",
     )
     parser.add_argument(
         "--max_number_boxes",
@@ -79,13 +85,12 @@ def get_image_files(image_dir: str):
     return sorted(files)
 
 
-def imread_unicode(image_path: str):
-    """Read image path that may contain Chinese characters (Windows)."""
+def imread_pil(image_path: str) -> Image.Image | None:
+    """Load image as RGB (supports Unicode paths on Windows via Pillow)."""
     try:
-        with open(image_path, "rb") as f:
-            image_data = np.frombuffer(f.read(), np.uint8)
-        return cv2.imdecode(image_data, cv2.IMREAD_COLOR)
-    except Exception:
+        with Image.open(image_path) as im:
+            return im.convert("RGB")
+    except OSError:
         return None
 
 
@@ -95,22 +100,21 @@ def get_providers(device: str = "gpu"):
     return ["CPUExecutionProvider"]
 
 
-def preprocess_image(image_bgr: np.ndarray, target_size):
+def preprocess_image(image_rgb: Image.Image, target_size):
     """
     Preprocess image:
     - resize to target_size (w,h)
-    - BGR -> RGB
     - normalize with ImageNet mean/std
     - HWC -> CHW
     - add batch dimension
     """
-    h0, w0 = image_bgr.shape[:2]
+    w0, h0 = image_rgb.size
     target_w, target_h = target_size
     w_rate = w0 / target_w
     h_rate = h0 / target_h
 
-    resized = cv2.resize(image_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    resized = image_rgb.resize((target_w, target_h), Image.Resampling.BILINEAR)
+    rgb = np.asarray(resized, dtype=np.float32) / 255.0
 
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -160,7 +164,6 @@ def postprocess(outputs, target_size, conf_threshold: float, max_number_boxes: i
     scores = np.max(prob, axis=1)
     labels = np.argmax(prob, axis=1)
 
-    # sort and cap
     sorted_idx = np.argsort(scores)[::-1][:max_number_boxes]
     scores = scores[sorted_idx]
     labels = labels[sorted_idx]
@@ -168,7 +171,6 @@ def postprocess(outputs, target_size, conf_threshold: float, max_number_boxes: i
     if masks is not None:
         masks = masks[sorted_idx]
 
-    # threshold
     keep = scores > conf_threshold
     scores = scores[keep]
     labels = labels[keep]
@@ -180,22 +182,51 @@ def postprocess(outputs, target_size, conf_threshold: float, max_number_boxes: i
     return scores, labels, boxes_xyxy_model, masks
 
 
-def draw_detections(image_bgr: np.ndarray, boxes_xyxy_orig: np.ndarray, labels: np.ndarray, scores: np.ndarray):
-    out = image_bgr.copy()
-    font_scale = max(0.5, min(2.0, min(out.shape[0], out.shape[1]) / 1000.0))
-    thickness = max(1, int(font_scale * 2))
+def _load_font(image_w: int, image_h: int) -> ImageFont.ImageFont:
+    size = max(12, int(min(image_w, image_h) / 1000.0 * 24))
+    for name in ("arial.ttf", "Arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def draw_detections(
+    image_rgb: Image.Image,
+    boxes_xyxy_orig: np.ndarray,
+    labels: np.ndarray,
+    scores: np.ndarray,
+) -> Image.Image:
+    out = image_rgb.copy()
+    draw = ImageDraw.Draw(out)
+    w_img, h_img = out.size
+    font = _load_font(w_img, h_img)
+    outline_w = max(1, min(w_img, h_img) // 400)
+    green = (0, 255, 0)
+
     for i in range(len(scores)):
         x1, y1, x2, y2 = boxes_xyxy_orig[i].astype(int).tolist()
-        color = (0, 255, 0)
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+        draw.rectangle([x1, y1, x2, y2], outline=green, width=outline_w)
         text = f"{int(labels[i])} {float(scores[i]):.2f}"
-        (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-        y_text = y1 - 5
-        if y_text - th - bl < 0:
-            y_text = y2 + th + bl + 5
-        cv2.rectangle(out, (x1, y_text - th - bl), (x1 + tw + 6, y_text + 2), color, -1)
-        cv2.putText(out, text, (x1 + 3, y_text - 3), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        y_text = y1 - 5 - th
+        if y_text < 0:
+            y_text = y2 + 5
+        draw.rectangle([x1, y_text, x1 + tw + 6, y_text + th + 4], fill=green)
+        draw.text((x1 + 3, y_text + 2), text, fill=(0, 0, 0), font=font)
     return out
+
+
+def resize_mask_bilinear(mask_2d: np.ndarray, size_wh: tuple[int, int]) -> np.ndarray:
+    """Resize float 2D mask to (W,H) using Pillow mode F."""
+    w0, h0 = size_wh
+    arr = np.ascontiguousarray(mask_2d.astype(np.float32))
+    pil_m = Image.fromarray(arr, mode="F")
+    pil_m = pil_m.resize((w0, h0), Image.Resampling.BILINEAR)
+    return np.asarray(pil_m, dtype=np.float32)
 
 
 def main():
@@ -209,8 +240,10 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
     out_vis_dir = os.path.join(args.output, "visualized")
+    out_low_conf_dir = os.path.join(args.output, "low_conf")
     out_mask_dir = os.path.join(args.output, "masks")
     os.makedirs(out_vis_dir, exist_ok=True)
+    os.makedirs(out_low_conf_dir, exist_ok=True)
     if args.save_masks:
         os.makedirs(out_mask_dir, exist_ok=True)
 
@@ -230,13 +263,12 @@ def main():
     total_start = time.time()
     ok = 0
     for idx, image_path in enumerate(image_files, 1):
-        image = imread_unicode(image_path)
+        image = imread_pil(image_path)
         if image is None:
             print(f"[{idx}/{len(image_files)}] skip (read failed): {image_path}")
             continue
 
         inp, (w_rate, h_rate), (w0, h0), _ = preprocess_image(image, model_shape)
-
 
         t0 = time.time()
         outputs = session.run(None, {input_name: inp})
@@ -246,7 +278,6 @@ def main():
             outputs, model_shape, args.threshold, args.max_number_boxes
         )
 
-        # map boxes to original image coordinates
         boxes_xyxy_orig = boxes_xyxy_model.copy()
         boxes_xyxy_orig[:, [0, 2]] *= w_rate
         boxes_xyxy_orig[:, [1, 3]] *= h_rate
@@ -255,17 +286,20 @@ def main():
 
         vis = draw_detections(image, boxes_xyxy_orig, labels, scores)
         stem = Path(image_path).stem
-        vis_path = os.path.join(out_vis_dir, f"{stem}_det.jpg")
-        cv2.imwrite(vis_path, vis)
+        vis_name = f"{stem}_det.jpg"
+        vis_path = os.path.join(out_vis_dir, vis_name)
+        vis.save(vis_path, quality=95)
 
-        # optionally save masks (raw -> resized -> binarized)
+        if len(scores) > 0 and np.any(scores < float(args.low_conf_threshold)):
+            low_path = os.path.join(out_low_conf_dir, vis_name)
+            vis.save(low_path, quality=95)
+
         if args.save_masks and masks is not None and len(masks) == len(scores):
             for i in range(len(scores)):
-                m = masks[i].astype(np.float32)
-                m_resized = cv2.resize(m, (w0, h0), interpolation=cv2.INTER_LINEAR)
+                m_resized = resize_mask_bilinear(masks[i], (w0, h0))
                 m_bin = (m_resized > 0).astype(np.uint8) * 255
                 m_path = os.path.join(out_mask_dir, f"{stem}_mask_{i}_cls{int(labels[i])}_{float(scores[i]):.2f}.png")
-                cv2.imwrite(m_path, m_bin)
+                Image.fromarray(m_bin, mode="L").save(m_path)
 
         ok += 1
         print(f"[{idx}/{len(image_files)}] det={len(scores)} infer={t_infer:.1f}ms -> {vis_path}")
@@ -276,6 +310,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
- 

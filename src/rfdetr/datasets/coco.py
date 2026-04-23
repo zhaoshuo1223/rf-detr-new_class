@@ -337,11 +337,13 @@ def _build_train_resize_config(
         A single-element list containing a ``OneOf`` config entry.
     """
     if square:
+        #产生拉伸形变
         option_a: Dict[str, Any] = {
             "OneOf": {
                 "transforms": [{"Resize": {"height": s, "width": s}} for s in scales],
             }
         }
+        #保持不被拉伸
         option_b: Dict[str, Any] = {
             "Sequential": {
                 "transforms": [
@@ -358,7 +360,10 @@ def _build_train_resize_config(
             }
         }
     else:
-        cap = max_size or 1333
+        #我进行了修改，原来的max_size是1333，我改成了1280
+        #我进行了修改，原来的max_size是1333，我改成了1280
+        #我进行了修改，原来的max_size是1333，我改成了1280
+        cap = max_size or 5000
         # SmallestMaxSize accepts a list and picks randomly — no OneOf needed
         size_param: Any = scales[0] if len(scales) == 1 else scales
         option_a = {
@@ -458,7 +463,11 @@ def make_coco_transforms(
     if image_set == "train":
         resolved_aug_config = aug_config if aug_config is not None else AUG_CONFIG
         resize_wrappers = AlbumentationsWrapper.from_config(
-            _build_train_resize_config(scales, square=False, max_size=1333)
+            #我进行了修改，原来的max_size是1333，我改成了1280
+            #我进行了修改，原来的max_size是1333，我改成了1280
+            #我进行了修改，原来的max_size是1333，我改成了1280
+            #我进行了修改，原来的max_size是1333，我改成了1280
+            _build_train_resize_config(scales, square=False, max_size=5000)
         )
         pipeline = [*resize_wrappers]
         if not gpu_postprocess:
@@ -473,7 +482,11 @@ def make_coco_transforms(
         resize_wrappers = AlbumentationsWrapper.from_config(
             [
                 {"SmallestMaxSize": {"max_size": resolution}},
-                {"LongestMaxSize": {"max_size": 1333}},
+                #我进行了修改，原来的max_size是1333，我改成了1280
+                #我进行了修改，原来的max_size是1333，我改成了1280
+                #我进行了修改，原来的max_size是1333，我改成了1280
+                #{"LongestMaxSize": {"max_size": 1333}},
+                {"LongestMaxSize": {"max_size": 5000}},
             ]
         )
         return Compose([*resize_wrappers, to_image, to_float, normalize])
