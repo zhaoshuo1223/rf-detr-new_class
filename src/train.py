@@ -40,7 +40,8 @@ if __name__ == '__main__':
 
     # 启动训练
     model.train(
-        #必须设置
+        
+        #建议设置
 
         # dataset_file = 'coco',
         dataset_dir = r'D:\aotto\dingweixiao\aaa_coco_data', 
